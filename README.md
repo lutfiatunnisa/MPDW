@@ -1,2 +1,2 @@
 # MPDW
-Praktikum MPDW 2023
+Praktikum MPDW 2026
