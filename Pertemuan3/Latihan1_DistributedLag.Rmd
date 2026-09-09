@@ -1,0 +1,254 @@
+---
+title: "Latihan 1 - Distributed Lag: Market Share vs Price"
+author: "Nama Anda"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: yeti
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Packages
+
+```{r packages}
+# install.packages("dLagM")
+# install.packages("dynlm")
+# install.packages("MLmetrics")
+# install.packages("lmtest")
+# install.packages("car")
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+library(car)
+```
+
+# Input Data
+
+Data pangsa pasar (Y) dan harga (X) pasta gigi selama 20 periode.
+
+```{r input-data}
+data <- data.frame(
+  Period = 1:20,
+  Yt = c(3.63, 4.20, 3.33, 4.54, 2.89, 4.87, 4.90, 5.29, 6.18, 7.20,
+         7.25, 6.09, 6.80, 8.65, 8.43, 8.29, 7.18, 7.90, 8.45, 8.23),
+  Xt = c(0.97, 0.95, 0.99, 0.91, 0.98, 0.90, 0.89, 0.86, 0.85, 0.82,
+         0.79, 0.83, 0.81, 0.77, 0.76, 0.80, 0.83, 0.79, 0.76, 0.78)
+)
+# Yt = Market Share (peubah dependen)
+# Xt = Price         (peubah independen)
+
+str(data)
+data
+```
+
+# Pembagian Data (Train/Test)
+
+```{r split-data}
+train <- data[1:15, ]
+test  <- data[16:20, ]
+
+train.ts <- ts(train)
+test.ts  <- ts(test)
+data.ts  <- ts(data)
+```
+
+# Model Koyck
+
+```{r model-koyck}
+model.koyck <- koyckDlm(x = train$Xt, y = train$Yt)
+summary(model.koyck)
+AIC(model.koyck)
+BIC(model.koyck)
+```
+
+## Peramalan dan Akurasi
+
+```{r fore-koyck}
+fore.koyck <- forecast(model = model.koyck, x = test$Xt, h = 5)
+fore.koyck
+mape.koyck <- MAPE(fore.koyck$forecasts, test$Yt)
+mape.koyck
+GoF(model.koyck)   # akurasi data training
+```
+
+# Regression with Distributed Lag (DLM)
+
+## Model dengan Lag = 2
+
+```{r model-dlm}
+model.dlm <- dlm(x = train$Xt, y = train$Yt, q = 2)
+summary(model.dlm)
+AIC(model.dlm)
+BIC(model.dlm)
+```
+
+```{r fore-dlm}
+fore.dlm <- forecast(model = model.dlm, x = test$Xt, h = 5)
+fore.dlm
+mape.dlm <- MAPE(fore.dlm$forecasts, test$Yt)
+mape.dlm
+GoF(model.dlm)
+```
+
+## Pencarian Lag Optimum
+
+```{r dlm-auto}
+finiteDLMauto(formula = Yt ~ Xt,
+              data = data.frame(train), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+Berdasarkan hasil di atas, tentukan `q_opt` sesuai lag dengan AIC terkecil.
+
+```{r model-dlm2}
+q_opt <- 6   # GANTI sesuai q dengan AIC terkecil dari hasil finiteDLMauto
+model.dlm2 <- dlm(x = train$Xt, y = train$Yt, q = q_opt)
+summary(model.dlm2)
+AIC(model.dlm2)
+BIC(model.dlm2)
+```
+
+```{r fore-dlm2}
+fore.dlm2 <- forecast(model = model.dlm2, x = test$Xt, h = 5)
+mape.dlm2 <- MAPE(fore.dlm2$forecasts, test$Yt)
+mape.dlm2
+GoF(model.dlm2)
+```
+
+# Model Autoregressive (ARDL)
+
+```{r model-ardl}
+model.ardl <- ardlDlm(formula = Yt ~ Xt,
+                       data = train, p = 1, q = 1)
+summary(model.ardl)
+AIC(model.ardl)
+BIC(model.ardl)
+```
+
+```{r fore-ardl}
+fore.ardl <- forecast(model = model.ardl, x = test$Xt, h = 5)
+fore.ardl
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Yt)
+mape.ardl
+GoF(model.ardl)
+```
+
+## Pencarian Orde (p, q) Optimum
+
+```{r ardl-opt}
+model.ardl.opt <- ardlBoundOrders(data = data.frame(data), ic = "AIC",
+                                   formula = Yt ~ Xt)
+model.ardl.opt
+
+min_p <- c()
+for (i in 1:6) {
+  min_p[i] <- min(model.ardl.opt$Stat.table[[i]])
+}
+q_opt2 <- which(min_p == min(min_p, na.rm = TRUE))[1]
+p_opt2 <- which(model.ardl.opt$Stat.table[[q_opt2]] ==
+                  min(model.ardl.opt$Stat.table[[q_opt2]], na.rm = TRUE))[1]
+data.frame("q_optimum" = q_opt2, "p_optimum" = p_opt2,
+           "AIC" = model.ardl.opt$min.Stat)
+```
+
+# Pemodelan dengan `dynlm` (Pembanding)
+
+```{r dynlm-models}
+cons_lm1 <- dynlm(Yt ~ Xt + L(Xt), data = train.ts)             # dlm q=1
+cons_lm2 <- dynlm(Yt ~ Xt + L(Yt), data = train.ts)              # ardl p=1,q=0
+cons_lm3 <- dynlm(Yt ~ Xt + L(Xt) + L(Yt), data = train.ts)      # ardl p=1,q=1
+cons_lm4 <- dynlm(Yt ~ Xt + L(Xt) + L(Xt, 2), data = train.ts)   # dlm q=2
+```
+
+## Ringkasan Model
+
+```{r dynlm-summary}
+summary(cons_lm1)
+summary(cons_lm2)
+summary(cons_lm3)
+summary(cons_lm4)
+```
+
+## SSE
+
+```{r sse}
+deviance(cons_lm1)
+deviance(cons_lm2)
+deviance(cons_lm3)
+deviance(cons_lm4)
+```
+
+## Uji Encompassing
+
+```{r encomptest}
+if (require("lmtest")) encomptest(cons_lm1, cons_lm2)
+```
+
+## Uji Autokorelasi Residual (Durbin-Watson)
+
+```{r dwtest}
+dwtest(cons_lm1)
+dwtest(cons_lm2)
+dwtest(cons_lm3)
+dwtest(cons_lm4)
+```
+
+## Uji Heteroskedastisitas (Breusch-Pagan)
+
+```{r bptest}
+bptest(cons_lm1)
+bptest(cons_lm2)
+bptest(cons_lm3)
+bptest(cons_lm4)
+```
+
+## Uji Normalitas Residual (Shapiro-Wilk)
+
+```{r shapiro}
+shapiro.test(residuals(cons_lm1))
+shapiro.test(residuals(cons_lm2))
+shapiro.test(residuals(cons_lm3))
+shapiro.test(residuals(cons_lm4))
+```
+
+# Perbandingan Model
+
+```{r akurasi}
+akurasi <- matrix(c(mape.koyck, mape.dlm, mape.dlm2, mape.ardl))
+row.names(akurasi) <- c("Koyck", "DLM (q=2)", paste0("DLM (q=", q_opt, ")"), "Autoregressive")
+colnames(akurasi) <- c("MAPE")
+akurasi
+```
+
+Model dengan nilai MAPE terkecil merupakan model paling optimum.
+
+## Plot Perbandingan Hasil Peramalan
+
+```{r plot-perbandingan, fig.width=8, fig.height=5}
+par(mfrow = c(1, 1))
+plot(test$Xt, test$Yt, type = "b", col = "black",
+     ylim = range(c(test$Yt, fore.koyck$forecasts, fore.dlm$forecasts,
+                     fore.dlm2$forecasts, fore.ardl$forecasts), na.rm = TRUE),
+     xlab = "Price (Xt)", ylab = "Market Share (Yt)",
+     main = "Perbandingan Hasil Peramalan - Latihan 1")
+
+points(test$Xt, fore.koyck$forecasts, col = "red");    lines(test$Xt, fore.koyck$forecasts, col = "red")
+points(test$Xt, fore.dlm$forecasts, col = "blue");     lines(test$Xt, fore.dlm$forecasts, col = "blue")
+points(test$Xt, fore.dlm2$forecasts, col = "orange");  lines(test$Xt, fore.dlm2$forecasts, col = "orange")
+points(test$Xt, fore.ardl$forecasts, col = "green");   lines(test$Xt, fore.ardl$forecasts, col = "green")
+
+legend("topright",
+       c("Aktual", "Koyck", "DLM (q=2)", paste0("DLM (q=", q_opt, ")"), "Autoregressive"),
+       lty = 1, col = c("black", "red", "blue", "orange", "green"), cex = 0.8)
+```
+
+# Kesimpulan
+
+Berdasarkan nilai MAPE pada tabel perbandingan, model dengan nilai MAPE terkecil dipilih sebagai model terbaik untuk memprediksi pangsa pasar berdasarkan harga.

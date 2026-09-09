@@ -1,0 +1,264 @@
+---
+title: "Latihan 2 - ARDL: Sales vs Advertising"
+author: "Nama Anda"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: yeti
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Packages
+
+```{r packages}
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+library(car)
+```
+
+# Input Data
+
+Data tahunan Sales (Y) dan Advertising (X) periode 1975-2014 (40 observasi).
+
+```{r input-data}
+data <- data.frame(
+  Year = 1975:2014,
+  Yt = c(11.7, 12.0, 12.3, 12.8, 13.1, 13.6, 13.9, 14.4, 14.7, 15.3,
+         15.5, 15.8, 16.1, 16.6, 16.9, 16.7, 16.9, 17.4, 17.6, 17.9,
+         18.0, 17.9, 18.0, 18.2, 18.2, 18.3, 18.6, 19.2, 19.3, 19.5,
+         19.2, 19.3, 19.5, 20.0, 20.0, 19.9, 19.8, 19.9, 20.2, 21.0),
+  Xt = c(9.4, 9.6, 10.0, 10.4, 10.8, 10.9, 11.7, 12.2, 12.5, 12.9,
+         13.0, 13.2, 13.8, 14.2, 14.6, 14.4, 15.0, 15.4, 15.7, 15.9,
+         15.9, 16.0, 16.3, 16.2, 16.8, 17.3, 17.6, 18.1, 18.3, 18.5,
+         18.7, 18.9, 19.2, 20.0, 20.0, 20.3, 20.4, 21.0, 21.5, 22.1)
+)
+# Yt = Sales        (peubah dependen)
+# Xt = Advertising  (peubah independen)
+
+str(data)
+data
+```
+
+# Pembagian Data (Train/Test)
+
+40 observasi dibagi proporsi 80:20 (train = 32 tahun pertama, test = 8 tahun terakhir).
+
+```{r split-data}
+n       <- nrow(data)
+n_train <- round(0.8 * n)
+
+train <- data[1:n_train, ]
+test  <- data[(n_train + 1):n, ]
+
+train.ts <- ts(train, start = train$Year[1])
+test.ts  <- ts(test,  start = test$Year[1])
+data.ts  <- ts(data,  start = data$Year[1])
+```
+
+# Model Koyck (Pembanding)
+
+```{r model-koyck}
+model.koyck <- koyckDlm(x = train$Xt, y = train$Yt)
+summary(model.koyck)
+AIC(model.koyck)
+BIC(model.koyck)
+```
+
+```{r fore-koyck}
+h_test <- nrow(test)
+fore.koyck <- forecast(model = model.koyck, x = test$Xt, h = h_test)
+mape.koyck <- MAPE(fore.koyck$forecasts, test$Yt)
+mape.koyck
+GoF(model.koyck)
+```
+
+# Regression with Distributed Lag (DLM)
+
+## Pencarian Lag Optimum
+
+```{r dlm-auto}
+finiteDLMauto(formula = Yt ~ Xt,
+              data = data.frame(train), q.min = 1, q.max = 8,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+Tentukan `q_opt` sesuai lag dengan AIC terkecil dari hasil di atas.
+
+```{r model-dlm}
+q_opt <- 1   # GANTI sesuai q dengan AIC terkecil dari hasil finiteDLMauto
+model.dlm <- dlm(x = train$Xt, y = train$Yt, q = q_opt)
+summary(model.dlm)
+AIC(model.dlm)
+BIC(model.dlm)
+```
+
+```{r fore-dlm}
+fore.dlm <- forecast(model = model.dlm, x = test$Xt, h = h_test)
+mape.dlm <- MAPE(fore.dlm$forecasts, test$Yt)
+mape.dlm
+GoF(model.dlm)
+```
+
+# Model ARDL (Fokus Utama Latihan 2)
+
+## Model Awal p = 1, q = 1
+
+```{r model-ardl}
+model.ardl <- ardlDlm(formula = Yt ~ Xt,
+                       data = train, p = 1, q = 1)
+summary(model.ardl)
+AIC(model.ardl)
+BIC(model.ardl)
+```
+
+```{r fore-ardl}
+fore.ardl <- forecast(model = model.ardl, x = test$Xt, h = h_test)
+fore.ardl
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Yt)
+mape.ardl
+GoF(model.ardl)
+```
+
+## Pencarian Orde (p, q) Optimum
+
+```{r ardl-opt}
+model.ardl.opt <- ardlBoundOrders(data = data.frame(data), ic = "AIC",
+                                   formula = Yt ~ Xt)
+model.ardl.opt
+
+min_p <- c()
+for (i in seq_along(model.ardl.opt$Stat.table)) {
+  min_p[i] <- min(model.ardl.opt$Stat.table[[i]])
+}
+q_opt2 <- which(min_p == min(min_p, na.rm = TRUE))[1]
+p_opt2 <- which(model.ardl.opt$Stat.table[[q_opt2]] ==
+                  min(model.ardl.opt$Stat.table[[q_opt2]], na.rm = TRUE))[1]
+data.frame("q_optimum" = q_opt2, "p_optimum" = p_opt2,
+           "AIC" = model.ardl.opt$min.Stat)
+```
+
+`[1]` ditambahkan pada `q_opt2` dan `p_opt2` supaya nilainya selalu satu angka
+(skalar), meskipun ada beberapa kombinasi lag yang memiliki AIC sama persis (*tie*).
+Tanpa ini, `p_final`/`q_final` bisa berisi lebih dari satu nilai sehingga model
+berikutnya gagal dan hasil forecast menjadi `NA` (penyebab error `need finite
+'ylim' values` saat plotting).
+
+## Model ARDL dengan (p, q) Optimum
+
+```{r model-ardl2}
+p_final <- p_opt2   # lag X optimum
+q_final <- q_opt2   # lag Y (orde AR) optimum
+
+model.ardl2 <- ardlDlm(formula = Yt ~ Xt,
+                        data = train, p = p_final, q = q_final)
+summary(model.ardl2)
+AIC(model.ardl2)
+BIC(model.ardl2)
+```
+
+```{r fore-ardl2}
+fore.ardl2 <- forecast(model = model.ardl2, x = test$Xt, h = h_test)
+mape.ardl2 <- MAPE(fore.ardl2$forecasts, test$Yt)
+mape.ardl2
+GoF(model.ardl2)
+```
+
+# Pemodelan dengan `dynlm` (Uji Diagnostik)
+
+```{r dynlm-models}
+cons_lm1 <- dynlm(Yt ~ Xt + L(Xt), data = train.ts)              # dlm q=1
+cons_lm2 <- dynlm(Yt ~ Xt + L(Yt), data = train.ts)               # ardl p=1,q=0
+cons_lm3 <- dynlm(Yt ~ Xt + L(Xt) + L(Yt), data = train.ts)       # ardl p=1,q=1
+```
+
+## Ringkasan Model
+
+```{r dynlm-summary}
+summary(cons_lm1)
+summary(cons_lm2)
+summary(cons_lm3)
+```
+
+## SSE
+
+```{r sse}
+deviance(cons_lm1)
+deviance(cons_lm2)
+deviance(cons_lm3)
+```
+
+## Uji Encompassing
+
+```{r encomptest}
+if (require("lmtest")) encomptest(cons_lm1, cons_lm2)
+```
+
+## Uji Autokorelasi Residual (Durbin-Watson)
+
+```{r dwtest}
+dwtest(cons_lm1)
+dwtest(cons_lm2)
+dwtest(cons_lm3)
+```
+
+## Uji Heteroskedastisitas (Breusch-Pagan)
+
+```{r bptest}
+bptest(cons_lm1)
+bptest(cons_lm2)
+bptest(cons_lm3)
+```
+
+## Uji Normalitas Residual (Shapiro-Wilk)
+
+```{r shapiro}
+shapiro.test(residuals(cons_lm1))
+shapiro.test(residuals(cons_lm2))
+shapiro.test(residuals(cons_lm3))
+```
+
+# Perbandingan Model
+
+```{r akurasi}
+akurasi <- matrix(c(mape.koyck, mape.dlm, mape.ardl, mape.ardl2))
+row.names(akurasi) <- c("Koyck", paste0("DLM (q=", q_opt, ")"),
+                         "ARDL (p=1,q=1)", paste0("ARDL (p=", p_final, ",q=", q_final, ")"))
+colnames(akurasi) <- c("MAPE")
+akurasi
+```
+
+Model dengan nilai MAPE terkecil merupakan model paling optimum.
+
+## Plot Perbandingan Hasil Peramalan
+
+```{r plot-perbandingan, fig.width=8, fig.height=5}
+par(mfrow = c(1, 1))
+plot(test$Year, test$Yt, type = "b", col = "black",
+     ylim = range(c(test$Yt, fore.koyck$forecasts, fore.dlm$forecasts,
+                     fore.ardl$forecasts, fore.ardl2$forecasts), na.rm = TRUE),
+     xlab = "Tahun", ylab = "Sales (Yt)",
+     main = "Perbandingan Hasil Peramalan - Latihan 2")
+
+points(test$Year, fore.koyck$forecasts, col = "red");   lines(test$Year, fore.koyck$forecasts, col = "red")
+points(test$Year, fore.dlm$forecasts, col = "blue");    lines(test$Year, fore.dlm$forecasts, col = "blue")
+points(test$Year, fore.ardl$forecasts, col = "orange"); lines(test$Year, fore.ardl$forecasts, col = "orange")
+points(test$Year, fore.ardl2$forecasts, col = "green"); lines(test$Year, fore.ardl2$forecasts, col = "green")
+
+legend("topleft",
+       c("Aktual", "Koyck", paste0("DLM (q=", q_opt, ")"),
+         "ARDL (p=1,q=1)", paste0("ARDL (p=", p_final, ",q=", q_final, ")")),
+       lty = 1, col = c("black", "red", "blue", "orange", "green"), cex = 0.8)
+```
+
+# Kesimpulan
+
+Berdasarkan nilai MAPE pada tabel perbandingan, model dengan nilai MAPE terkecil
+dipilih sebagai model ARDL terbaik untuk memprediksi Sales berdasarkan Advertising.
