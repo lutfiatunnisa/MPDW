@@ -1,0 +1,264 @@
+---
+title: "Pemodelan ARIMA Harga Cabai"
+author: "Lutfiatun Nisa"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# 1. Persiapan Package
+
+```{r setup, message=FALSE, warning=FALSE}
+packages <- c("forecast", "tseries", "ggplot2", "xts")
+
+for (pkg in packages) {
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg, dependencies = TRUE)
+    library(pkg, character.only = TRUE)
+  }
+}
+```
+
+# 2. Memuat Data
+
+```{r load-data}
+data <- read.csv(
+  "data_fia_cabai.csv",
+  sep = ";",
+  stringsAsFactors = FALSE
+)
+
+head(data)
+str(data)
+```
+
+# 3. Preprocessing Data
+
+```{r preprocessing}
+data$Tanggal <- as.Date(data$Tanggal, format = "%d/%m/%Y")
+
+data$Harga <- gsub(",", ".", data$Harga)
+data$Harga <- as.numeric(data$Harga)
+
+data <- data[order(data$Tanggal), ]
+
+ts_harga <- ts(data$Harga, frequency = 7)
+
+head(data)
+```
+
+# 4. Plot Deret Waktu
+
+```{r plot-original}
+plot(
+  ts_harga,
+  main = "Plot Deret Waktu Harga Cabai",
+  ylab = "Harga",
+  xlab = "Waktu / Periode",
+  col = "blue",
+  lwd = 2
+)
+```
+
+# 5. Uji Stasioneritas ADF
+
+```{r adf-test}
+adf_test <- adf.test(ts_harga)
+print(adf_test)
+```
+
+# 6. Differencing
+
+```{r differencing}
+d_diff <- 0
+
+if (adf_test$p.value > 0.05) {
+  message("Data tidak stasioner, melakukan differencing...")
+
+  ts_diff <- diff(ts_harga, differences = 1)
+  d_diff <- 1
+
+  adf_diff <- adf.test(ts_diff)
+  print(adf_diff)
+
+} else {
+  message("Data sudah stasioner.")
+  ts_diff <- ts_harga
+}
+
+cat("Orde differencing (d) yang digunakan:", d_diff, "\n")
+```
+
+# 7. ACF dan PACF Data Stasioner
+
+```{r acf-pacf}
+par(mfrow = c(1, 2))
+
+Acf(
+  ts_diff,
+  main = "ACF Differencing Harga Cabai"
+)
+
+Pacf(
+  ts_diff,
+  main = "PACF Differencing Harga Cabai"
+)
+
+par(mfrow = c(1, 1))
+```
+
+# 8. Pemodelan ARIMA
+
+```{r arima-model}
+model_arima <- auto.arima(
+  ts_harga,
+  seasonal = TRUE,
+  stepwise = FALSE,
+  approximation = FALSE
+)
+
+model_arima
+```
+
+# 9. Orde dan Ringkasan Model ARIMA
+
+```{r model-summary}
+arima_order <- arimaorder(model_arima)
+
+cat("Model ARIMA terpilih:\n")
+cat(
+  "ARIMA(",
+  arima_order[1], ",",
+  arima_order[2], ",",
+  arima_order[3],
+  ")\n",
+  sep = ""
+)
+
+summary(model_arima)
+```
+
+# 10. AIC, AICc, dan BIC
+
+```{r model-criteria}
+model_criteria <- data.frame(
+  Model = paste0(
+    "ARIMA(",
+    arima_order[1], ",",
+    arima_order[2], ",",
+    arima_order[3],
+    ")"
+  ),
+  AIC = AIC(model_arima),
+  AICc = model_arima$aicc,
+  BIC = BIC(model_arima)
+)
+
+model_criteria
+```
+
+# 11. Diagnostik Residual
+
+```{r residual-diagnostics}
+checkresiduals(model_arima)
+```
+
+## Uji Ljung-Box
+
+```{r ljung-box}
+residual_test <- Box.test(
+  residuals(model_arima),
+  lag = 10,
+  type = "Ljung-Box",
+  fitdf = length(coef(model_arima))
+)
+
+print(residual_test)
+```
+
+# 12. Peramalan
+
+```{r forecasting}
+forecast_result <- forecast(
+  model_arima,
+  h = 10
+)
+
+print(forecast_result)
+```
+
+## Plot Hasil Peramalan
+
+```{r forecast-plot}
+plot(
+  forecast_result,
+  main = "Hasil Peramalan ARIMA untuk Harga Cabai",
+  ylab = "Harga",
+  xlab = "Waktu"
+)
+```
+
+# 13. Menghitung MAPE
+
+```{r mape}
+actual <- as.numeric(ts_harga)
+fitted_value <- as.numeric(fitted(model_arima))
+
+valid <- is.finite(actual) &
+  is.finite(fitted_value) &
+  actual != 0
+
+mape <- mean(
+  abs(
+    (actual[valid] - fitted_value[valid]) /
+      actual[valid]
+  )
+) * 100
+
+cat("MAPE =", round(mape, 2), "%\n")
+```
+
+# 14. Ringkasan Hasil Pemodelan
+
+```{r final-summary}
+cat("========================================\n")
+cat("RINGKASAN PEMODELAN ARIMA\n")
+cat("========================================\n")
+
+cat(
+  "Model terpilih : ARIMA(",
+  arima_order[1], ",",
+  arima_order[2], ",",
+  arima_order[3],
+  ")\n",
+  sep = ""
+)
+
+cat("AIC  :", round(AIC(model_arima), 4), "\n")
+cat("AICc :", round(model_arima$aicc, 4), "\n")
+cat("BIC  :", round(BIC(model_arima), 4), "\n")
+cat("MAPE :", round(mape, 2), "%\n")
+cat(
+  "Ljung-Box p-value :",
+  round(residual_test$p.value, 4),
+  "\n"
+)
+```
+
+# 15. Kesimpulan
+
+```{r conclusion, results='asis'}
+cat(
+  "Berdasarkan tahapan pemodelan ARIMA, data harga cabai terlebih dahulu dilakukan pemeriksaan stasioneritas menggunakan uji Augmented Dickey-Fuller (ADF). ",
+  "Apabila data belum stasioner, dilakukan differencing untuk memperoleh data yang stasioner. ",
+  "Selanjutnya ACF dan PACF digunakan sebagai bagian dari identifikasi model. ",
+  "Pemilihan model ARIMA dilakukan menggunakan auto.arima() dengan mempertimbangkan kriteria informasi model. ",
+  "Model yang terpilih kemudian diperiksa melalui diagnostik residual dan uji Ljung-Box. ",
+  "Setelah model memenuhi pemeriksaan diagnostik, model digunakan untuk melakukan peramalan harga cabai."
+)
+```
+
+# 16. Selesai
+
+```{r finish}
+cat("Pemodelan ARIMA selesai dilakukan.\n")
+```
